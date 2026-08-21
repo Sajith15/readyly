@@ -1,0 +1,23 @@
+{% extends "auth_base.html" %}
+{% block title %}Reset password &middot; Stash{% endblock %}
+{% block heading %}Forgot your password?{% endblock %}
+
+{% block form %}
+{% if sent %}
+  <div class="alert alert-notice">
+    If an account exists for that address, a reset link is on its way.
+    The link works once and expires in 30 minutes.
+  </div>
+{% else %}
+  <p class="lead">Enter your email and we&rsquo;ll send you a link to set a new password.</p>
+  <form method="post" action="/forgot" class="stack">
+    <label for="email">Email</label>
+    <input id="email" name="email" type="email" autocomplete="email" required autofocus>
+    <button type="submit" class="btn-primary">Email me a reset link</button>
+  </form>
+{% endif %}
+{% endblock %}
+
+{% block switch %}
+<a href="/login">Back to sign in</a>
+{% endblock %}

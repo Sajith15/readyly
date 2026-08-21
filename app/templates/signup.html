@@ -1,0 +1,22 @@
+{% extends "auth_base.html" %}
+{% block title %}Create account &middot; Stash{% endblock %}
+{% block heading %}Create your account{% endblock %}
+
+{% block form %}
+<form method="post" action="/signup" class="stack">
+  <label for="email">Email</label>
+  <input id="email" name="email" type="email" autocomplete="email" required
+         value="{{ email or '' }}" autofocus>
+
+  <label for="password">Password</label>
+  <input id="password" name="password" type="password"
+         autocomplete="new-password" minlength="8" required>
+  <p class="hint">At least 8 characters.</p>
+
+  <button type="submit" class="btn-primary">Create account</button>
+</form>
+{% endblock %}
+
+{% block switch %}
+Already have an account? <a href="/login">Sign in</a>
+{% endblock %}

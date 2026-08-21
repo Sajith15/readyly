@@ -1,0 +1,23 @@
+{% extends "auth_base.html" %}
+{% block title %}Sign in &middot; Stash{% endblock %}
+{% block heading %}Sign in{% endblock %}
+
+{% block form %}
+<form method="post" action="/login" class="stack">
+  <label for="email">Email</label>
+  <input id="email" name="email" type="email" autocomplete="email" required
+         value="{{ email or '' }}" autofocus>
+
+  <label for="password">Password</label>
+  <input id="password" name="password" type="password"
+         autocomplete="current-password" required>
+
+  <button type="submit" class="btn-primary">Sign in</button>
+</form>
+{% endblock %}
+
+{% block switch %}
+<a href="/forgot">Forgot your password?</a>
+<span class="dot">&middot;</span>
+New here? <a href="/signup">Create an account</a>
+{% endblock %}

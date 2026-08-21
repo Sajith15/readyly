@@ -1,0 +1,28 @@
+{% extends "auth_base.html" %}
+{% block title %}Set a new password &middot; Stash{% endblock %}
+{% block heading %}Set a new password{% endblock %}
+
+{% block form %}
+{% if invalid %}
+  <div class="alert alert-error">
+    This reset link is invalid, already used, or expired.
+    Request a fresh one to continue.
+  </div>
+  <a class="btn-primary btn-link" href="/forgot">Request a new link</a>
+{% else %}
+  <form method="post" action="/reset" class="stack">
+    <input type="hidden" name="token" value="{{ token }}">
+
+    <label for="password">New password</label>
+    <input id="password" name="password" type="password"
+           autocomplete="new-password" minlength="8" required autofocus>
+    <p class="hint">At least 8 characters.</p>
+
+    <button type="submit" class="btn-primary">Update password</button>
+  </form>
+{% endif %}
+{% endblock %}
+
+{% block switch %}
+<a href="/login">Back to sign in</a>
+{% endblock %}

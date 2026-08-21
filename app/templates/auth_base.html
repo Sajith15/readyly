@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block body_class %}auth-page{% endblock %}
+
+{% block body %}
+<main class="auth-card">
+  <div class="brand">
+    <span class="brand-mark">S</span>
+    <div>
+      <h1>Stash</h1>
+      <p class="brand-tagline">Bookmarks you can talk to.</p>
+    </div>
+  </div>
+
+  <h2>{% block heading %}{% endblock %}</h2>
+
+  {% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+  {% if notice %}<div class="alert alert-notice">{{ notice }}</div>{% endif %}
+
+  {% block form %}{% endblock %}
+
+  <p class="auth-switch">{% block switch %}{% endblock %}</p>
+</main>
+{% endblock %}

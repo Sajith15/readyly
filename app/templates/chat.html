@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Stash{% endblock %}
+{% block body_class %}chat-page{% endblock %}
+
+{% block body %}
+<header class="topbar">
+  <div class="brand brand-sm">
+    <span class="brand-mark">S</span>
+    <h1>Stash</h1>
+  </div>
+  <div class="topbar-right">
+    <span class="user-email">{{ user.email }}</span>
+    <form method="post" action="/chat/clear"><button class="btn-ghost">Clear chat</button></form>
+    <form method="post" action="/logout"><button class="btn-ghost">Log out</button></form>
+  </div>
+</header>
+
+<main class="chat-shell">
+  <div id="messages" class="messages" aria-live="polite">
+    {% if not history %}
+    <div class="empty-state">
+      <h2>Your bookmarks, by conversation.</h2>
+      <p>Ask the co-pilot to save, find, or remove links. It reaches your
+         bookmarks through MCP tools scoped to your account.</p>
+      <div class="suggestions">
+        <button class="chip">Save https://example.com under tag reading</button>
+        <button class="chip">What did I stash about Python?</button>
+        <button class="chip">List my bookmarks</button>
+        <button class="chip">Delete the example.com bookmark</button>
+      </div>
+    </div>
+    {% endif %}
+
+    {% for message in history %}
+    <div class="msg msg-{{ message.role }}">
+      <div class="bubble">{{ message.content }}</div>
+    </div>
+    {% endfor %}
+  </div>
+
+  <form id="composer" class="composer">
+    <input id="input" name="message" type="text" autocomplete="off" required
+           maxlength="2000" placeholder="Save a link, or ask what you&rsquo;ve stashed&hellip;">
+    <button id="send" type="submit" class="btn-primary">Send</button>
+  </form>
+</main>
+
+<script src="/static/chat.js"></script>
+{% endblock %}
