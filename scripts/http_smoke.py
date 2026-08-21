@@ -21,6 +21,7 @@ import uuid
 import httpx
 
 from app import db, repository
+from app.config import OPENAI_API_KEY
 from app.main import app
 
 BASE = "http://testserver"
@@ -169,6 +170,23 @@ async def main() -> int:
             )
             check("the replayed reset did not change anything",
                   response.status_code == 401)
+
+            print("\nChat degrades honestly without a key")
+            await client.post("/login", data={"email": email, "password": new_password})
+            response = await client.post("/api/chat", json={"message": "hello"})
+            if OPENAI_API_KEY:
+                check("chat is reachable when a key is configured",
+                      response.status_code == 200, str(response.status_code))
+            else:
+                body = response.json()
+                check("an unconfigured co-pilot returns 503, not a crash",
+                      response.status_code == 503, str(response.status_code))
+                check("the message says what is wrong",
+                      "OPENAI_API_KEY" in body.get("error", ""), str(body))
+
+            blank = await client.post("/api/chat", json={"message": "   "})
+            check("a blank message is rejected", blank.status_code in (400, 422),
+                  str(blank.status_code))
     finally:
         logging.getLogger("app.mailer").removeHandler(capture)
         if user_id:
