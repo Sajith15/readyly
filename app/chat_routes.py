@@ -22,7 +22,7 @@ class ChatRequest(BaseModel):
 
 
 @router.get("/chat", response_class=HTMLResponse)
-async def chat_page(request: Request, user=Depends(require_user)):
+def chat_page(request: Request, user=Depends(require_user)):
     return templates.TemplateResponse(
         request,
         "chat.html",
@@ -59,6 +59,6 @@ async def chat_api(payload: ChatRequest, user=Depends(require_user)):
 
 
 @router.post("/chat/clear")
-async def clear_chat(user=Depends(require_user)):
+def clear_chat(user=Depends(require_user)):
     conversations.clear(str(user["id"]))
     return RedirectResponse("/chat", status_code=303)

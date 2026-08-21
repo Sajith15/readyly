@@ -1,4 +1,8 @@
-"""Request-scoped authentication helpers."""
+"""Request-scoped authentication helpers.
+
+These are plain `def` so FastAPI resolves them in a threadpool, keeping the
+session lookup off the event loop even when the route itself is async.
+"""
 from __future__ import annotations
 
 from typing import Any
@@ -13,16 +17,16 @@ class AuthRequired(Exception):
     """Raised by protected routes when there is no valid session."""
 
 
-async def current_user(request: Request) -> dict[str, Any] | None:
+def current_user(request: Request) -> dict[str, Any] | None:
     """Resolve the signed-in user from the session cookie, or None."""
     token = request.cookies.get(SESSION_COOKIE_NAME)
     if not token:
         return None
-    return await repository.get_user_by_session(token)
+    return repository.get_user_by_session(token)
 
 
-async def require_user(request: Request) -> dict[str, Any]:
-    user = await current_user(request)
+def require_user(request: Request) -> dict[str, Any]:
+    user = current_user(request)
     if user is None:
         raise AuthRequired()
     return user

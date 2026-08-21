@@ -1,4 +1,9 @@
-"""Signup, login, logout and the password-reset flow."""
+"""Signup, login, logout and the password-reset flow.
+
+Handlers are `def` rather than `async def`: they are database-bound, so FastAPI
+runs them in a threadpool. Email is dispatched as a background task so a slow
+Resend call never delays the redirect.
+"""
 from __future__ import annotations
 
 import logging
@@ -33,14 +38,14 @@ def _redirect(path: str) -> RedirectResponse:
 
 
 @router.get("/signup", response_class=HTMLResponse)
-async def signup_form(request: Request):
-    if await current_user(request):
+def signup_form(request: Request):
+    if current_user(request):
         return _redirect("/chat")
     return templates.TemplateResponse(request, "signup.html", {})
 
 
 @router.post("/signup", response_class=HTMLResponse)
-async def signup(
+def signup(
     request: Request,
     background: BackgroundTasks,
     email: str = Form(...),
@@ -54,7 +59,7 @@ async def signup(
             request, "signup.html", {"error": str(exc), "email": email}, status_code=400
         )
 
-    user = await repository.create_user(email, hash_password(password))
+    user = repository.create_user(email, hash_password(password))
     if user is None:
         return templates.TemplateResponse(
             request,
@@ -65,7 +70,7 @@ async def signup(
 
     background.add_task(mailer.send_welcome_email, email)
 
-    token = await repository.create_session(str(user["id"]))
+    token = repository.create_session(str(user["id"]))
     response = _redirect("/chat")
     set_session_cookie(response, token)
     return response
@@ -75,19 +80,17 @@ async def signup(
 
 
 @router.get("/login", response_class=HTMLResponse)
-async def login_form(request: Request, reset: int = 0):
-    if await current_user(request):
+def login_form(request: Request, reset: int = 0):
+    if current_user(request):
         return _redirect("/chat")
     notice = "Password updated. Please sign in." if reset else None
     return templates.TemplateResponse(request, "login.html", {"notice": notice})
 
 
 @router.post("/login", response_class=HTMLResponse)
-async def login(
-    request: Request, email: str = Form(...), password: str = Form(...)
-):
+def login(request: Request, email: str = Form(...), password: str = Form(...)):
     email = normalise_email(email)
-    user = await repository.get_user_by_email(email)
+    user = repository.get_user_by_email(email)
 
     # verify_password burns an equivalent amount of time when the user is
     # missing, so this branch does not reveal which emails are registered.
@@ -99,17 +102,17 @@ async def login(
             status_code=401,
         )
 
-    token = await repository.create_session(str(user["id"]))
+    token = repository.create_session(str(user["id"]))
     response = _redirect("/chat")
     set_session_cookie(response, token)
     return response
 
 
 @router.post("/logout")
-async def logout(request: Request):
+def logout(request: Request):
     token = request.cookies.get(SESSION_COOKIE_NAME)
     if token:
-        await repository.delete_session(token)
+        repository.delete_session(token)
     response = _redirect("/login")
     clear_session_cookie(response)
     return response
@@ -119,19 +122,17 @@ async def logout(request: Request):
 
 
 @router.get("/forgot", response_class=HTMLResponse)
-async def forgot_form(request: Request, sent: int = 0):
+def forgot_form(request: Request, sent: int = 0):
     return templates.TemplateResponse(request, "forgot.html", {"sent": bool(sent)})
 
 
 @router.post("/forgot", response_class=HTMLResponse)
-async def forgot(
-    request: Request, background: BackgroundTasks, email: str = Form(...)
-):
+def forgot(request: Request, background: BackgroundTasks, email: str = Form(...)):
     email = normalise_email(email)
-    user = await repository.get_user_by_email(email)
+    user = repository.get_user_by_email(email)
 
     if user is not None:
-        token = await repository.create_reset_token(str(user["id"]))
+        token = repository.create_reset_token(str(user["id"]))
         reset_url = f"{BASE_URL}/reset?token={token}"
         background.add_task(mailer.send_password_reset_email, email, reset_url)
     else:
@@ -142,8 +143,8 @@ async def forgot(
 
 
 @router.get("/reset", response_class=HTMLResponse)
-async def reset_form(request: Request, token: str = ""):
-    if not token or not await repository.reset_token_is_valid(token):
+def reset_form(request: Request, token: str = ""):
+    if not token or not repository.reset_token_is_valid(token):
         return templates.TemplateResponse(
             request, "reset.html", {"invalid": True}, status_code=400
         )
@@ -151,9 +152,7 @@ async def reset_form(request: Request, token: str = ""):
 
 
 @router.post("/reset", response_class=HTMLResponse)
-async def reset(
-    request: Request, token: str = Form(...), password: str = Form(...)
-):
+def reset(request: Request, token: str = Form(...), password: str = Form(...)):
     try:
         validate_password(password)
     except ValidationError as exc:
@@ -161,19 +160,18 @@ async def reset(
             request, "reset.html", {"token": token, "error": str(exc)}, status_code=400
         )
 
-    # Spending the token and changing the password are separate statements, but
-    # the token is spent first: a failure after this point cannot leave a
-    # reusable link behind.
-    user_id = await repository.consume_reset_token(token)
+    # The token is spent before the password changes, so a failure part-way
+    # through cannot leave a reusable link behind.
+    user_id = repository.consume_reset_token(token)
     if user_id is None:
         return templates.TemplateResponse(
             request, "reset.html", {"invalid": True}, status_code=400
         )
 
-    await repository.set_password(user_id, hash_password(password))
-    await repository.invalidate_reset_tokens_for_user(user_id)
+    repository.set_password(user_id, hash_password(password))
+    repository.invalidate_reset_tokens_for_user(user_id)
     # Anyone holding an old session (including whoever forced the reset) is out.
-    await repository.delete_sessions_for_user(user_id)
+    repository.delete_sessions_for_user(user_id)
     conversations.clear(user_id)
 
     return _redirect("/login?reset=1")

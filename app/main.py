@@ -23,11 +23,11 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    await db.open_pool()
+    db.open_pool()
     try:
         yield
     finally:
-        await db.close_pool()
+        db.close_pool()
 
 
 app = FastAPI(title="Stash", lifespan=lifespan)
@@ -47,8 +47,8 @@ app.include_router(chat_routes.router)
 
 
 @app.get("/")
-async def index(request: Request):
-    destination = "/chat" if await current_user(request) else "/login"
+def index(request: Request):
+    destination = "/chat" if current_user(request) else "/login"
     return RedirectResponse(destination, status_code=303)
 
 

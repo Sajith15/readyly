@@ -1,12 +1,12 @@
 """End-to-end smoke test for everything except the LLM itself.
 
 Exercises the real code paths: bookmarks go through the MCP bridge exactly as
-the chat handler would drive them, and auth goes through app.repository.
+the chat handler drives them, and auth goes through app.repository.
 
     python -m scripts.smoke_test
 
-Requires DATABASE_URL and an initialised schema. Creates two throwaway users
-and deletes them (and their bookmarks, by cascade) on the way out.
+Requires DATABASE_URL and an initialised schema. Creates throwaway users and
+deletes them (and their bookmarks, by cascade) on the way out.
 """
 from __future__ import annotations
 
@@ -29,23 +29,35 @@ def check(label: str, condition: bool, detail: str = "") -> None:
         _failures.append(label)
 
 
+def make_user(prefix: str, password: str = "correct horse") -> dict:
+    return repository.create_user(
+        f"{prefix}-{uuid.uuid4().hex[:8]}@example.test", hash_password(password)
+    )
+
+
 async def call(toolbox, name: str, **arguments):
+    """Invoke an MCP tool the way the chat handler does, and decode the result."""
     return json.loads(await toolbox.call(name, arguments))
 
 
 async def test_bookmarks_are_scoped_per_user() -> None:
     print("\nBookmarks via MCP, scoped per user")
 
-    alice = await repository.create_user(
-        f"alice-{uuid.uuid4().hex[:8]}@example.test", hash_password("correct horse")
-    )
-    bob = await repository.create_user(
-        f"bob-{uuid.uuid4().hex[:8]}@example.test", hash_password("battery staple")
-    )
+    alice = make_user("alice")
+    bob = make_user("bob")
     alice_id, bob_id = str(alice["id"]), str(bob["id"])
 
     try:
         async with toolbox_for_user(alice_id) as toolbox:
+            tools = await toolbox.openai_tools()
+            leaky = [
+                field
+                for tool in tools
+                for field in tool["function"]["parameters"].get("properties", {})
+                if "user" in field.lower()
+            ]
+            check("no tool schema exposes a user id", not leaky, str(leaky))
+
             saved = await call(
                 toolbox,
                 "add_bookmark",
@@ -57,14 +69,14 @@ async def test_bookmarks_are_scoped_per_user() -> None:
             bookmark = saved["saved"]
             check("add_bookmark stores a bookmark", "id" in bookmark)
             check(
-                "bare host is normalised to https",
+                "a bare host is normalised to https",
                 bookmark["url"] == "https://example.com/python-guide",
                 bookmark["url"],
             )
             check("tags are stored", bookmark["tags"] == ["reading", "python"])
 
             listed = await call(toolbox, "list_bookmarks")
-            check("owner sees their bookmark", listed["count"] == 1)
+            check("the owner sees their bookmark", listed["count"] == 1)
 
             found = await call(toolbox, "search_bookmarks", query="python")
             check("keyword search matches", found["count"] == 1)
@@ -73,23 +85,24 @@ async def test_bookmarks_are_scoped_per_user() -> None:
             check("tag search matches", by_tag["count"] == 1)
 
             missing = await call(toolbox, "search_bookmarks", query="kubernetes")
-            check("unrelated keyword returns nothing", missing["count"] == 0)
+            check("an unrelated keyword returns nothing", missing["count"] == 0)
 
         alice_bookmark_id = bookmark["id"]
 
         async with toolbox_for_user(bob_id) as toolbox:
             listed = await call(toolbox, "list_bookmarks")
-            check("a second user sees none of the first user's bookmarks",
-                  listed["count"] == 0, str(listed))
+            check(
+                "a second user sees none of the first user's bookmarks",
+                listed["count"] == 0,
+                str(listed),
+            )
 
             found = await call(toolbox, "search_bookmarks", query="python")
             check("cross-user search returns nothing", found["count"] == 0)
 
-            stolen = await call(
-                toolbox, "delete_bookmark", bookmark_id=alice_bookmark_id
-            )
+            stolen = await call(toolbox, "delete_bookmark", bookmark_id=alice_bookmark_id)
             check(
-                "a user cannot delete another user's bookmark by id",
+                "a user cannot delete another user's bookmark, even with its id",
                 stolen["deleted"] is False,
                 str(stolen),
             )
@@ -98,124 +111,95 @@ async def test_bookmarks_are_scoped_per_user() -> None:
             check("a malformed id is rejected cleanly", junk["deleted"] is False)
 
         async with toolbox_for_user(alice_id) as toolbox:
-            still_there = await call(toolbox, "list_bookmarks")
-            check("the targeted bookmark survived", still_there["count"] == 1)
+            survived = await call(toolbox, "list_bookmarks")
+            check("the targeted bookmark survived", survived["count"] == 1)
 
-            deleted = await call(
-                toolbox, "delete_bookmark", bookmark_id=alice_bookmark_id
-            )
+            deleted = await call(toolbox, "delete_bookmark", bookmark_id=alice_bookmark_id)
             check("the owner can delete it", deleted["deleted"] is True)
 
             empty = await call(toolbox, "list_bookmarks")
             check("it is gone afterwards", empty["count"] == 0)
     finally:
-        await _delete_users(alice_id, bob_id)
+        repository.delete_users([alice_id, bob_id])
 
 
-async def test_password_reset_tokens() -> None:
+def test_password_reset_tokens() -> None:
     print("\nPassword reset tokens")
 
-    user = await repository.create_user(
-        f"reset-{uuid.uuid4().hex[:8]}@example.test", hash_password("original pass")
-    )
+    user = make_user("reset", password="original pass")
     user_id = str(user["id"])
 
     try:
-        token = await repository.create_reset_token(user_id)
-        check("a fresh token validates", await repository.reset_token_is_valid(token))
+        token = repository.create_reset_token(user_id)
+        check("a fresh token validates", repository.reset_token_is_valid(token))
 
-        spent = await repository.consume_reset_token(token)
-        check("consuming returns the owner", spent == user_id)
+        check("consuming returns the owner", repository.consume_reset_token(token) == user_id)
+        check("the same token cannot be spent twice",
+              repository.consume_reset_token(token) is None)
+        check("a spent token no longer validates",
+              not repository.reset_token_is_valid(token))
+        check("an unknown token is rejected",
+              repository.consume_reset_token("fabricated") is None)
 
-        replay = await repository.consume_reset_token(token)
-        check("the same token cannot be spent twice", replay is None)
-        check(
-            "a spent token no longer validates",
-            not await repository.reset_token_is_valid(token),
-        )
-        check(
-            "an unknown token is rejected",
-            await repository.consume_reset_token("fabricated") is None,
-        )
-
-        await repository.set_password(user_id, hash_password("brand new pass"))
-        refreshed = await repository.get_user_by_email(user["email"])
-        check(
-            "the new password works",
-            verify_password("brand new pass", refreshed["password_hash"]),
-        )
-        check(
-            "the old password no longer works",
-            not verify_password("original pass", refreshed["password_hash"]),
-        )
+        repository.set_password(user_id, hash_password("brand new pass"))
+        refreshed = repository.get_user_by_email(user["email"])
+        check("the new password works",
+              verify_password("brand new pass", refreshed["password_hash"]))
+        check("the old password no longer works",
+              not verify_password("original pass", refreshed["password_hash"]))
     finally:
-        await _delete_users(user_id)
+        repository.delete_users([user_id])
 
 
-async def test_sessions() -> None:
+def test_sessions() -> None:
     print("\nSessions")
 
-    user = await repository.create_user(
-        f"session-{uuid.uuid4().hex[:8]}@example.test", hash_password("some password")
-    )
+    user = make_user("session")
     user_id = str(user["id"])
 
     try:
-        token = await repository.create_session(user_id)
-        resolved = await repository.get_user_by_session(token)
-        check("a session resolves to its user", resolved and str(resolved["id"]) == user_id)
+        token = repository.create_session(user_id)
+        resolved = repository.get_user_by_session(token)
+        check("a session resolves to its user",
+              resolved is not None and str(resolved["id"]) == user_id)
 
-        await repository.delete_session(token)
-        check(
-            "logout revokes the session",
-            await repository.get_user_by_session(token) is None,
-        )
+        repository.delete_session(token)
+        check("logout revokes the session",
+              repository.get_user_by_session(token) is None)
 
-        second = await repository.create_session(user_id)
-        await repository.delete_sessions_for_user(user_id)
-        check(
-            "a password reset revokes every session",
-            await repository.get_user_by_session(second) is None,
-        )
-        check(
-            "a fabricated cookie resolves to nobody",
-            await repository.get_user_by_session("fabricated") is None,
-        )
+        second = repository.create_session(user_id)
+        repository.delete_sessions_for_user(user_id)
+        check("a password reset revokes every session",
+              repository.get_user_by_session(second) is None)
+        check("a fabricated cookie resolves to nobody",
+              repository.get_user_by_session("fabricated") is None)
     finally:
-        await _delete_users(user_id)
+        repository.delete_users([user_id])
 
 
-async def test_duplicate_signup_is_rejected() -> None:
+def test_signup_rules() -> None:
     print("\nSignup")
 
-    email = f"dupe-{uuid.uuid4().hex[:8]}@example.test"
-    first = await repository.create_user(email, hash_password("some password"))
-    check("the first signup succeeds", first is not None)
-
+    user = make_user("dupe")
     try:
-        second = await repository.create_user(email, hash_password("other password"))
-        check("a duplicate email is rejected", second is None)
+        check("the first signup succeeds", user is not None)
+        duplicate = repository.create_user(user["email"], hash_password("other password"))
+        check("a duplicate email is rejected", duplicate is None)
     finally:
-        await _delete_users(str(first["id"]))
+        repository.delete_users([str(user["id"])])
 
 
-async def _delete_users(*user_ids: str) -> None:
-    async with db.connection() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                "DELETE FROM users WHERE id = ANY(%s)", (list(user_ids),)
-            )
-
-
-async def main() -> int:
-    await db.open_pool()
+def main() -> int:
+    db.open_pool()
     try:
-        await test_duplicate_signup_is_rejected()
-        await test_sessions()
-        await test_password_reset_tokens()
-        await test_bookmarks_are_scoped_per_user()
+        test_signup_rules()
+        test_sessions()
+        test_password_reset_tokens()
+        # Only the bookmark path needs an event loop: it talks to the MCP
+        # subprocess over stdio.
+        asyncio.run(test_bookmarks_are_scoped_per_user())
     finally:
-        await db.close_pool()
+        db.close_pool()
 
     print()
     if _failures:
@@ -226,4 +210,4 @@ async def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(asyncio.run(main()))
+    sys.exit(main())
