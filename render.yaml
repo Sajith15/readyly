@@ -1,0 +1,40 @@
+# Render blueprint. Creating the service from this file provisions the web
+# service and its Postgres together, and wires DATABASE_URL automatically.
+services:
+  - type: web
+    name: stash
+    runtime: python
+    plan: free
+    region: oregon
+    branch: main
+    # init_db.py is idempotent, so the schema is reconciled on every deploy.
+    buildCommand: pip install -r requirements.txt && python -m scripts.init_db
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.7"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: stash-db
+          property: connectionString
+      - key: APP_ENV
+        value: production
+      - key: EMAIL_FROM
+        value: Stash <onboarding@resend.dev>
+      - key: OPENAI_MODEL
+        value: gpt-4o-mini
+      # Set these in the Render dashboard; never commit them.
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      # Must match the service's public URL so reset links resolve.
+      - key: BASE_URL
+        sync: false
+
+databases:
+  - name: stash-db
+    plan: free
+    region: oregon
