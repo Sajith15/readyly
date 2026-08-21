@@ -82,6 +82,26 @@ The app runs without an OpenAI or Resend key — chat returns a clear "not
 configured" error, and emails are written to the log instead of being sent — so
 you can exercise the auth flows before wiring credentials.
 
+## Verifying it works
+
+Four scripts, none of which need an OpenAI key. All except `check_mcp` need
+`DATABASE_URL` and an initialised schema; they create throwaway users and clean
+up after themselves.
+
+```bash
+python -m scripts.check_mcp        # tool schemas the model sees (no DB needed)
+python -m scripts.smoke_test       # auth invariants + cross-user isolation
+python -m scripts.http_smoke       # the graded click-through, at HTTP level
+python -m scripts.chat_loop_test   # the tool-call loop, against a stubbed LLM
+```
+
+`chat_loop_test` scripts a stand-in LLM so the parts we own are asserted
+deterministically: that tool calls are dispatched through MCP, that results are
+fed back with their call ids, that a hallucinated tool name is reported to the
+model instead of raising, and that the hop cap ends a runaway with a real
+answer. `smoke_test` is the one that proves the security claim — a second user
+can neither list nor delete the first user's bookmarks, even when handed the id.
+
 ## Environment variables
 
 | Variable | Required | Example | Notes |
