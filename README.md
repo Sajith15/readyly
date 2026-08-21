@@ -159,6 +159,11 @@ The schema is created by the build command. `scripts/schema.sql` is entirely
   addresses, so neither confirms whether an account exists.
 - The MCP subprocess receives only `DATABASE_URL` and `STASH_USER_ID` — not the
   app's OpenAI or Resend credentials.
+- `add_bookmark` fetches the page to fill in a missing title, which means the
+  server makes requests to user-supplied URLs. Each hop is restricted to
+  http/https and to hostnames that resolve exclusively to public addresses, and
+  redirects are followed manually so a redirect to `169.254.169.254` is
+  re-checked rather than trusted. The body is streamed and capped at 64 KB.
 
 ## Known limitations / next steps
 
@@ -181,10 +186,10 @@ Things I would fix first, in order of how much they matter:
    be enough to blunt credential stuffing and reset-link spam.
 4. **No email verification on signup.** Accounts are usable immediately, so
    somebody can sign up with an address they do not own.
-5. **Bookmark titles are whatever the model infers.** Fetching the URL
-   server-side and parsing `<title>` would be better, but it needs SSRF
-   guards (blocking loopback and link-local ranges) to be safe, which is more
-   than a five-minute addition.
-6. **No automated tests.** `scripts/check_mcp.py` is a smoke check for the tool
-   schemas, not a test suite. The highest-value tests would cover reset-token
-   single-use and cross-user bookmark isolation.
+5. **Title fetching is synchronous inside the tool call.** `add_bookmark` blocks
+   for up to five seconds on a slow page before saving. It should move to a
+   background job that backfills the title after the bookmark is stored.
+6. **The checks are scripts, not a test framework.** They assert real
+   behaviour and clean up after themselves, but they are not wired into CI and
+   there is no coverage measurement. Porting them to pytest and running them on
+   push would be the obvious next step.

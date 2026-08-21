@@ -18,6 +18,7 @@ import uuid
 from app import db, repository
 from app.mcp_bridge import toolbox_for_user
 from app.security import hash_password, verify_password
+from mcp_server import page_title
 
 _failures: list[str] = []
 
@@ -189,12 +190,28 @@ def test_signup_rules() -> None:
         repository.delete_users([str(user["id"])])
 
 
+def test_title_fetch_refuses_internal_targets() -> None:
+    print("\nTitle fetching refuses internal targets (SSRF guard)")
+
+    blocked = [
+        ("loopback by name", "http://localhost/"),
+        ("loopback by address", "http://127.0.0.1:8000/"),
+        ("cloud metadata", "http://169.254.169.254/latest/meta-data/"),
+        ("private range", "http://10.0.0.1/"),
+        ("private range", "http://192.168.1.1/"),
+        ("non-http scheme", "file:///etc/passwd"),
+    ]
+    for label, url in blocked:
+        check(f"refuses {label}: {url}", page_title.fetch_title(url) is None)
+
+
 def main() -> int:
     db.open_pool()
     try:
         test_signup_rules()
         test_sessions()
         test_password_reset_tokens()
+        test_title_fetch_refuses_internal_targets()
         # Only the bookmark path needs an event loop: it talks to the MCP
         # subprocess over stdio.
         asyncio.run(test_bookmarks_are_scoped_per_user())

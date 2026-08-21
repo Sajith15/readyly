@@ -18,7 +18,7 @@ from typing import Any
 
 from mcp.server import MCPServer
 
-from mcp_server import repository
+from mcp_server import page_title, repository
 
 mcp = MCPServer(
     name="stash-bookmarks",
@@ -39,7 +39,8 @@ def _user_id() -> str:
 @mcp.tool(
     description=(
         "Save a new bookmark for the user. Provide the URL, and optionally a "
-        "short title, a list of tags, and free-form notes."
+        "short title, a list of tags, and free-form notes. If you do not supply "
+        "a title, the page is fetched and its own title is used."
     )
 )
 def add_bookmark(
@@ -48,6 +49,10 @@ def add_bookmark(
     tags: list[str] | None = None,
     notes: str | None = None,
 ) -> dict[str, Any]:
+    if not (title or "").strip():
+        # Best effort: a page that will not load still gets bookmarked.
+        title = page_title.fetch_title(repository.normalise_url(url))
+
     bookmark = repository.add_bookmark(
         user_id=_user_id(), url=url, title=title, tags=tags, notes=notes
     )

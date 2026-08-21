@@ -48,6 +48,16 @@ def _clean_tags(tags: list[str] | None) -> list[str]:
     return list(seen.values())
 
 
+def normalise_url(url: str) -> str:
+    """Users say "example.com"; store something a browser can actually open."""
+    url = (url or "").strip()
+    if not url:
+        raise ValueError("A bookmark needs a URL.")
+    if "://" not in url:
+        url = f"https://{url}"
+    return url
+
+
 def add_bookmark(
     user_id: str,
     url: str,
@@ -55,11 +65,7 @@ def add_bookmark(
     tags: list[str] | None = None,
     notes: str | None = None,
 ) -> dict[str, Any]:
-    url = (url or "").strip()
-    if not url:
-        raise ValueError("A bookmark needs a URL.")
-    if "://" not in url:
-        url = f"https://{url}"
+    url = normalise_url(url)
 
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(
