@@ -12,7 +12,7 @@ from typing import Any
 
 from openai import AsyncOpenAI, OpenAIError
 
-from app.config import MAX_TOOL_HOPS, OPENAI_API_KEY, OPENAI_MODEL
+from app.config import AI_API_KEY, AI_BASE_URL, AI_MODEL, MAX_TOOL_HOPS
 from app.mcp_bridge import toolbox_for_user
 
 logger = logging.getLogger(__name__)
@@ -49,11 +49,11 @@ class ChatTurn:
 
 
 def _client() -> AsyncOpenAI:
-    if not OPENAI_API_KEY:
-        raise ChatUnavailable(
-            "The co-pilot is not configured: OPENAI_API_KEY is missing."
-        )
-    return AsyncOpenAI(api_key=OPENAI_API_KEY)
+    if not AI_API_KEY:
+        raise ChatUnavailable("The co-pilot is not configured: AI_API_KEY is missing.")
+    # base_url=None keeps the SDK's default, so this same client works against
+    # OpenAI or any compatible endpoint.
+    return AsyncOpenAI(api_key=AI_API_KEY, base_url=AI_BASE_URL)
 
 
 def _assistant_message(message: Any) -> dict[str, Any]:
@@ -98,13 +98,13 @@ async def run_chat_turn(
         for hop in range(MAX_TOOL_HOPS):
             try:
                 response = await client.chat.completions.create(
-                    model=OPENAI_MODEL,
+                    model=AI_MODEL,
                     messages=messages,
                     tools=tool_defs,
                     tool_choice="auto",
                 )
             except OpenAIError as exc:
-                logger.exception("OpenAI call failed on hop %s", hop)
+                logger.exception("Model call failed on hop %s", hop)
                 raise ChatUnavailable(f"The co-pilot is unavailable: {exc}") from exc
 
             message = response.choices[0].message
@@ -133,7 +133,7 @@ async def run_chat_turn(
         logger.warning("Tool hop cap (%s) reached for user %s", MAX_TOOL_HOPS, user_id)
         try:
             final = await client.chat.completions.create(
-                model=OPENAI_MODEL,
+                model=AI_MODEL,
                 messages=[
                     *messages,
                     {
@@ -146,7 +146,7 @@ async def run_chat_turn(
                 ],
             )
         except OpenAIError as exc:
-            logger.exception("OpenAI wrap-up call failed")
+            logger.exception("Model wrap-up call failed")
             raise ChatUnavailable(f"The co-pilot is unavailable: {exc}") from exc
 
         return ChatTurn(

@@ -7,7 +7,7 @@ the API expects, and that the hop cap ends a runaway with a real answer.
 
     python -m scripts.chat_loop_test
 
-Needs DATABASE_URL and an initialised schema, but no OPENAI_API_KEY.
+Needs DATABASE_URL and an initialised schema, but no AI_API_KEY.
 """
 from __future__ import annotations
 

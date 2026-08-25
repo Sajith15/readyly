@@ -6,22 +6,21 @@ single-use enforcement on the reset link.
 
     python -m scripts.http_smoke
 
-The reset link is read out of the mailer's log line (the mailer logs instead of
-sending when RESEND_API_KEY is unset), so this exercises the real email path
-rather than reaching into the tokens table.
+The reset link is taken from the mailer, which is substituted for a spy, so the
+test follows the link a user would actually receive rather than reaching into
+the tokens table - and it neither needs a Resend key nor spends email quota.
 """
 from __future__ import annotations
 
 import asyncio
-import logging
 import re
 import sys
 import uuid
 
 import httpx
 
-from app import db, repository
-from app.config import OPENAI_API_KEY
+from app import db, mailer, repository
+from app.config import AI_API_KEY
 from app.main import app
 
 BASE = "http://testserver"
@@ -36,31 +35,49 @@ def check(label: str, condition: bool, detail: str = "") -> None:
         _failures.append(label)
 
 
-class MailCapture(logging.Handler):
-    """Collects the mailer's log output so the test can read the reset link."""
+class MailSpy:
+    """Stands in for the mailer, recording what would have been sent.
+
+    Substituting the functions rather than reading the log keeps the test
+    independent of whether RESEND_API_KEY is configured, and stops a test run
+    spending real email quota.
+    """
 
     def __init__(self) -> None:
-        super().__init__()
-        self.messages: list[str] = []
+        self.welcomed: list[str] = []
+        self.resets: list[tuple[str, str]] = []
+        self._originals: tuple = ()
 
-    def emit(self, record: logging.LogRecord) -> None:
-        self.messages.append(record.getMessage())
+    def install(self) -> None:
+        self._originals = (mailer.send_welcome_email, mailer.send_password_reset_email)
+
+        async def send_welcome_email(to: str) -> None:
+            self.welcomed.append(to)
+
+        async def send_password_reset_email(to: str, reset_url: str) -> None:
+            self.resets.append((to, reset_url))
+
+        mailer.send_welcome_email = send_welcome_email
+        mailer.send_password_reset_email = send_password_reset_email
+
+    def remove(self) -> None:
+        if self._originals:
+            mailer.send_welcome_email, mailer.send_password_reset_email = self._originals
 
     def latest_reset_path(self) -> str | None:
         """The emailed link is absolute against BASE_URL; the test only needs
         the path to replay it against the in-process app."""
-        for message in reversed(self.messages):
-            match = re.search(r"/reset\?token=(\S+)", message)
-            if match:
-                return match.group(0)
-        return None
+        if not self.resets:
+            return None
+        match = re.search(r"/reset\?token=\S+", self.resets[-1][1])
+        return match.group(0) if match else None
 
 
 async def main() -> int:
     db.open_pool()
 
-    capture = MailCapture()
-    logging.getLogger("app.mailer").addHandler(capture)
+    mail = MailSpy()
+    mail.install()
 
     email = f"walkthrough-{uuid.uuid4().hex[:8]}@example.test"
     old_password = "first password"
@@ -87,8 +104,8 @@ async def main() -> int:
             check("the user exists in the database", record is not None)
             user_id = str(record["id"]) if record else None
 
-            check("a welcome email was dispatched",
-                  any("Welcome to Stash" in m for m in capture.messages))
+            check("a welcome email was dispatched to the new address",
+                  mail.welcomed == [email], str(mail.welcomed))
 
             response = await client.get("/chat")
             check("the chat page renders for a signed-in user",
@@ -130,7 +147,10 @@ async def main() -> int:
                   unknown.status_code == response.status_code
                   and unknown.headers["location"] == response.headers["location"])
 
-            path = capture.latest_reset_path()
+            check("no email is sent for an unknown address",
+                  [to for to, _ in mail.resets] == [email], str(mail.resets))
+
+            path = mail.latest_reset_path()
             check("a reset link was emailed", path is not None)
             if not path:
                 return 1
@@ -174,7 +194,7 @@ async def main() -> int:
             print("\nChat degrades honestly without a key")
             await client.post("/login", data={"email": email, "password": new_password})
             response = await client.post("/api/chat", json={"message": "hello"})
-            if OPENAI_API_KEY:
+            if AI_API_KEY:
                 check("chat is reachable when a key is configured",
                       response.status_code == 200, str(response.status_code))
             else:
@@ -182,13 +202,13 @@ async def main() -> int:
                 check("an unconfigured co-pilot returns 503, not a crash",
                       response.status_code == 503, str(response.status_code))
                 check("the message says what is wrong",
-                      "OPENAI_API_KEY" in body.get("error", ""), str(body))
+                      "AI_API_KEY" in body.get("error", ""), str(body))
 
             blank = await client.post("/api/chat", json={"message": "   "})
             check("a blank message is rejected", blank.status_code in (400, 422),
                   str(blank.status_code))
     finally:
-        logging.getLogger("app.mailer").removeHandler(capture)
+        mail.remove()
         if user_id:
             repository.delete_users([user_id])
         db.close_pool()

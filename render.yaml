@@ -23,10 +23,12 @@ services:
         value: production
       - key: EMAIL_FROM
         value: Stash <onboarding@resend.dev>
-      - key: OPENAI_MODEL
-        value: gpt-4o-mini
+      - key: AI_BASE_URL
+        value: https://generativelanguage.googleapis.com/v1beta/openai/
+      - key: AI_MODEL
+        value: gemini-2.5-flash
       # Set these in the Render dashboard; never commit them.
-      - key: OPENAI_API_KEY
+      - key: AI_API_KEY
         sync: false
       - key: RESEND_API_KEY
         sync: false

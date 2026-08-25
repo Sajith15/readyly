@@ -9,6 +9,10 @@ server**, which is spawned per request with your user id baked into its
 environment. Auth is bcrypt-hashed with server-side sessions, password resets
 use single-use time-limited tokens, and transactional email goes out via Resend.
 
+The co-pilot runs on Gemini by default, but it talks to any OpenAI-compatible
+chat-completions endpoint, so switching provider is three environment variables
+rather than a code change.
+
 ## Architecture
 
 ```
@@ -20,7 +24,7 @@ FastAPI web service (Render)
   ├── Chat handler (app/chat.py)
   │     │  conversation + tool definitions
   │     ▼
-  │   OpenAI  ──── tool_calls ───► MCP bridge (app/mcp_bridge.py)
+  │    LLM    ──── tool_calls ───► MCP bridge (app/mcp_bridge.py)
   │                                     │  stdio JSON-RPC
   │                                     ▼
   │                               MCP server subprocess (mcp_server/server.py)
@@ -84,31 +88,42 @@ you can exercise the auth flows before wiring credentials.
 
 ## Verifying it works
 
-Four scripts, none of which need an OpenAI key. All except `check_mcp` need
-`DATABASE_URL` and an initialised schema; they create throwaway users and clean
-up after themselves.
+Five scripts. All except `check_mcp` need `DATABASE_URL` and an initialised
+schema; they create throwaway users and clean up after themselves. Only
+`live_chat_test` spends tokens.
 
 ```bash
 python -m scripts.check_mcp        # tool schemas the model sees (no DB needed)
 python -m scripts.smoke_test       # auth invariants + cross-user isolation
 python -m scripts.http_smoke       # the graded click-through, at HTTP level
 python -m scripts.chat_loop_test   # the tool-call loop, against a stubbed LLM
+python -m scripts.live_chat_test   # the real model, end to end (needs AI_API_KEY)
 ```
 
 `chat_loop_test` scripts a stand-in LLM so the parts we own are asserted
 deterministically: that tool calls are dispatched through MCP, that results are
 fed back with their call ids, that a hallucinated tool name is reported to the
 model instead of raising, and that the hop cap ends a runaway with a real
-answer. `smoke_test` is the one that proves the security claim — a second user
-can neither list nor delete the first user's bookmarks, even when handed the id.
+answer.
+
+`smoke_test` proves the security claim at the data layer — a second user can
+neither list nor delete the first user's bookmarks, even when handed the id.
+`live_chat_test` proves it at the conversational layer: it asks the model, in
+so many words, to enter "admin mode" and dump every other user's bookmarks, and
+asserts nothing leaks. It also covers the graded sequence end to end (save with
+an inferred tag, search, delete by description).
+
+`http_smoke` substitutes a spy for the mailer, so it follows the link a user
+would really receive without needing a Resend key or spending email quota.
 
 ## Environment variables
 
 | Variable | Required | Example | Notes |
 |---|---|---|---|
 | `DATABASE_URL` | yes | `postgresql://stash:stash@localhost:55432/stash` | Postgres connection string. Render injects this from the linked database. |
-| `OPENAI_API_KEY` | for chat | `sk-proj-…` | Without it, chat returns a 503 with a clear message. |
-| `OPENAI_MODEL` | no | `gpt-4o-mini` | Any tool-calling chat model. |
+| `AI_API_KEY` | for chat | `AIzaSy…` | Without it, chat returns a 503 with a clear message. |
+| `AI_BASE_URL` | no | `https://generativelanguage.googleapis.com/v1beta/openai/` | Any OpenAI-compatible endpoint. Leave blank for OpenAI itself. |
+| `AI_MODEL` | no | `gemini-2.5-flash` | Any model that supports tool calling. |
 | `RESEND_API_KEY` | for email | `re_…` | Without it, emails are logged, not sent. |
 | `EMAIL_FROM` | no | `Stash <onboarding@resend.dev>` | Resend's shared sandbox sender needs no verified domain. |
 | `BASE_URL` | yes in prod | `https://stash.onrender.com` | Used to build reset links. No trailing slash. |
@@ -127,7 +142,7 @@ by hand instead:
 - **Start command:** `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
 - **Health check path:** `/healthz`
 
-Set `OPENAI_API_KEY`, `RESEND_API_KEY` and `BASE_URL` in the dashboard (they are
+Set `AI_API_KEY`, `RESEND_API_KEY` and `BASE_URL` in the dashboard (they are
 marked `sync: false` in the blueprint precisely so secrets stay out of Git).
 `BASE_URL` must match the service's public URL or reset links will point at the
 wrong host. Auto-deploy on push to `main` is enabled in the blueprint.

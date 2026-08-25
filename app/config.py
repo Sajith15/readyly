@@ -24,8 +24,13 @@ def _require(name: str) -> str:
 
 DATABASE_URL = _require("DATABASE_URL")
 
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
-OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini").strip()
+# The co-pilot talks to any OpenAI-compatible chat-completions endpoint, so the
+# provider is configuration rather than a code change. Leave AI_BASE_URL unset
+# for OpenAI itself; point it at Gemini's compatibility layer, Groq, or a local
+# server to switch. Only the model needs to support tool calling.
+AI_API_KEY = os.environ.get("AI_API_KEY", "").strip()
+AI_BASE_URL = os.environ.get("AI_BASE_URL", "").strip() or None
+AI_MODEL = os.environ.get("AI_MODEL", "gemini-2.5-flash").strip()
 
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "").strip()
 EMAIL_FROM = os.environ.get("EMAIL_FROM", "Stash <onboarding@resend.dev>").strip()
