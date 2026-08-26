@@ -155,13 +155,16 @@ def profile_live(base: str, repeats: int = 3) -> int:
 
     no_tools = statistics.median(summary["no tools    "])
     with_tool = statistics.median(summary["1 tool (read) "])
+    first = summary["no tools    "][0]
     print("\n=== what the numbers imply ===")
-    print(f"  a turn with no tool call:   {no_tools:5.2f}s")
-    print(f"  a turn with one tool call:  {with_tool:5.2f}s")
-    print(f"  cost of the extra hop:      {with_tool - no_tools:5.2f}s")
+    print(f"  first message for this user: {first:5.2f}s")
+    print(f"  a later turn, no tool call:  {no_tools:5.2f}s")
+    print(f"  a later turn, one tool call: {with_tool:5.2f}s")
+    print(f"  cost of the extra hop:       {with_tool - no_tools:5.2f}s")
     print(
-        "  the no-tool turn is still one MCP spawn + one model round trip, so\n"
-        "  that figure is the floor every message pays."
+        "  MCP sessions are cached per user, so the first message pays the\n"
+        "  subprocess spawn and later ones are model latency plus tool time.\n"
+        "  A large gap between the first and later figures is that spawn."
     )
     return 0
 

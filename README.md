@@ -62,6 +62,35 @@ tool schemas contain no user field yourself:
 python -m scripts.check_mcp
 ```
 
+### Why sessions are cached, and why that is still safe
+
+The first version spawned a fresh MCP subprocess for every message. That is the
+easiest version to audit, but profiling the deployment showed it was also
+almost all of the latency: an ~11s turn was ~7s of spawn, ~1.5s of teardown and
+only ~2s of actual model time, with the database under 100ms. Nearly all of the
+spawn is `import mcp` — 1.3s of a 1.4s module import locally, and around 6-7s
+on a throttled 0.1-CPU instance.
+
+So `app/mcp_bridge.py` now keeps a session per user and reuses it, evicting it
+once idle. Typical turns went from ~11s to ~1.3-2.4s on the same free instance;
+only a user's first message pays the spawn. Measure it yourself with
+`python -m scripts.profile_chat <url>`, and confirm the reuse in the logs —
+there should be one `MCP session ready` line for many `chat turn took` lines.
+
+The scoping guarantee is unchanged, which was the constraint the change had to
+respect. The cache key *is* the user id, and the subprocess still gets
+`STASH_USER_ID` pinned in its environment, so a process is only ever reused for
+the user it was spawned for. Reuse across users is not something that is
+prevented by a check; there is no code path that can express it.
+
+Two details make the reuse safe rather than merely fast. Each session is owned
+by a dedicated task that both opens and closes it, because anyio requires the
+task that entered a context manager to be the one that exits it — closing from
+whichever request happened to finish last would corrupt the cancel scope. And
+the registry lock is never held across a spawn, so one user's slow start does
+not queue behind another's, while concurrent turns for the same user await a
+single shared future instead of racing to create duplicate processes.
+
 ## Local setup
 
 Requires Python 3.11+ and a Postgres you can reach.
@@ -145,6 +174,8 @@ would really receive without needing a Resend key or spending email quota.
 | `EMAIL_FROM` | no | `Stash <onboarding@resend.dev>` | Resend's shared sandbox sender needs no verified domain. |
 | `BASE_URL` | yes in prod | `https://stash.onrender.com` | Used to build reset links. No trailing slash. |
 | `APP_ENV` | no | `production` | Setting `production` marks session cookies `Secure`. |
+| `MCP_MAX_LIVE_SESSIONS` | no | `4` | Cached MCP subprocesses to keep. Bounded by instance memory, not by database connections. |
+| `MCP_SESSION_IDLE_SECONDS` | no | `300` | How long an unused session is kept before eviction. |
 
 Copy `.env.example` to `.env` to get the full list. `.env` is gitignored and
 must never be committed.
@@ -231,22 +262,10 @@ internet, so there is no reason to open the allow list.
 
 Things I would fix first, in order of how much they matter:
 
-1. **A subprocess per chat turn — and it dominates latency.** `toolbox_for_user`
-   spawns a fresh MCP server for every message. Measured on the deployed free
-   instance with `python -m scripts.profile_chat <url>`, a turn takes ~11s, of
-   which the subprocess lifecycle is ~8.5s and the two model round trips only
-   ~2s. Almost all of the spawn cost is `import mcp` — 1.3s of a 1.4s module
-   import locally, and roughly 6-7s on a throttled 0.1-CPU instance. The
-   database work itself is under 100ms.
-
-   I chose per-turn spawning because it makes the scoping guarantee trivial to
-   audit: a process only ever knows one user. That reasoning still holds, but
-   the price is much higher than the "roughly a second" I assumed from local
-   numbers. The fix is a keyed session cache with idle eviction, which would cut
-   a typical turn from ~11s to ~3s; it is fiddly to get right around async
-   context-manager lifetimes, which is why it is listed here rather than done.
-   Note that the guarantee is preserved either way, since the cache key is the
-   user id and a process is never handed to a different user.
+1. **The first message of a session is still slow.** Sessions are cached (see
+   above), but a user's first message pays the ~7s spawn, and a free instance
+   that has spun down adds a ~30s wake-up on top. Pre-warming a session at login
+   would hide the first cost; the second needs a paid instance.
 2. **Chat history is in-process memory.** `app/conversations.py` keeps the last
    20 turns per user in a dict. It resets on restart and would not be shared
    across multiple Render instances. A `messages` table would fix both; I left
