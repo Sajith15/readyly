@@ -51,7 +51,8 @@ def install_probes() -> None:
     async def timed_toolbox(user_id: str):
         started = perf_counter()
         async with real_toolbox(user_id) as toolbox:
-            record("mcp spawn + initialize", perf_counter() - started)
+            # Near-zero once a session is cached; the first turn pays the spawn.
+            record("mcp session acquire", perf_counter() - started)
             yield toolbox
 
     chat_module.toolbox_for_user = timed_toolbox
@@ -199,6 +200,7 @@ async def main() -> int:
                 f"n={len(values):<3} avg={total / len(values):5.2f}s  {label}"
             )
     finally:
+        await mcp_bridge.close_all_sessions()
         repository.delete_users([user_id])
         db.close_pool()
     return 0

@@ -17,7 +17,7 @@ import uuid
 
 from app import chat, conversations, db, repository
 from app.config import AI_BASE_URL, AI_MODEL
-from app.mcp_bridge import toolbox_for_user
+from app.mcp_bridge import close_all_sessions, toolbox_for_user
 from app.security import hash_password
 
 _failures: list[str] = []
@@ -125,6 +125,7 @@ async def main() -> int:
             check("it deleted the right one", "python.org" in remaining[0]["url"],
                   remaining[0]["url"])
     finally:
+        await close_all_sessions()
         conversations.clear(alice_id)
         conversations.clear(mallory_id)
         repository.delete_users([alice_id, mallory_id])

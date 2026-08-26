@@ -46,3 +46,12 @@ RESET_TOKEN_TTL_MINUTES = 30
 
 # Upper bound on LLM -> tool -> LLM round trips for a single chat turn.
 MAX_TOOL_HOPS = 5
+
+# MCP sessions are cached per user, because starting the subprocess costs ~1s
+# locally and ~7s on a small instance — which dominated chat latency when every
+# turn paid it. A cached session is an idle Python process holding no database
+# connection, so the ceiling is memory: keep it low enough that the web app and
+# its subprocesses fit the instance. Raise it on a larger plan.
+MCP_MAX_LIVE_SESSIONS = int(os.environ.get("MCP_MAX_LIVE_SESSIONS", "4"))
+MCP_SESSION_IDLE_SECONDS = float(os.environ.get("MCP_SESSION_IDLE_SECONDS", "300"))
+MCP_SESSION_SWEEP_SECONDS = 30.0

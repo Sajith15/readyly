@@ -18,6 +18,7 @@ import uuid
 from types import SimpleNamespace
 
 from app import chat, db, repository
+from app.mcp_bridge import close_all_sessions
 from app.security import hash_password
 
 _failures: list[str] = []
@@ -176,6 +177,7 @@ async def main() -> int:
         await test_unknown_tool_is_reported_not_raised(user_id)
         await test_hop_cap_ends_a_runaway(user_id)
     finally:
+        await close_all_sessions()
         repository.delete_users([user_id])
         db.close_pool()
 

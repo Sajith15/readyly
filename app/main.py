@@ -10,7 +10,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from app import auth_routes, chat_routes, db
+from app import auth_routes, chat_routes, db, mcp_bridge
 from app.deps import AuthRequired, current_user
 
 logging.basicConfig(
@@ -27,6 +27,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        # Cached MCP subprocesses outlive individual requests, so they have to
+        # be shut down explicitly rather than left to the garbage collector.
+        await mcp_bridge.close_all_sessions()
         db.close_pool()
 
 

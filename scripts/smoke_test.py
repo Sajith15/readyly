@@ -16,7 +16,7 @@ import sys
 import uuid
 
 from app import db, repository
-from app.mcp_bridge import toolbox_for_user
+from app.mcp_bridge import close_all_sessions, toolbox_for_user
 from app.security import hash_password, verify_password
 from mcp_server import page_title
 
@@ -121,6 +121,7 @@ async def test_bookmarks_are_scoped_per_user() -> None:
             empty = await call(toolbox, "list_bookmarks")
             check("it is gone afterwards", empty["count"] == 0)
     finally:
+        await close_all_sessions()
         repository.delete_users([alice_id, bob_id])
 
 
