@@ -1,5 +1,8 @@
 # Stash
 
+**Live: https://stash-phon.onrender.com** — on Render's free tier, so the first
+request after a spell of inactivity takes ~30 seconds to wake the instance.
+
 Stash is a personal bookmark manager you operate by talking to it. You sign up
 with an email and password, then tell an AI co-pilot things like *"Save
 https://example.com under tag reading"* or *"What did I stash about Python?"*.
@@ -88,8 +91,8 @@ you can exercise the auth flows before wiring credentials.
 
 ## Verifying it works
 
-Five scripts. All except `check_mcp` need `DATABASE_URL` and an initialised
-schema; they create throwaway users and clean up after themselves. Only
+Locally, all except `check_mcp` need `DATABASE_URL` and an initialised schema;
+they create throwaway users and clean up after themselves. Only
 `live_chat_test` spends tokens.
 
 ```bash
@@ -99,6 +102,19 @@ python -m scripts.http_smoke       # the graded click-through, at HTTP level
 python -m scripts.chat_loop_test   # the tool-call loop, against a stubbed LLM
 python -m scripts.live_chat_test   # the real model, end to end (needs AI_API_KEY)
 ```
+
+Against a deployment, `live_check` drives the public URL over real HTTP the way
+a grader would click through it — sign up, save a bookmark by talking to the
+co-pilot, recall it, log out and back in to prove persistence, then confirm a
+second account cannot see the first one's data:
+
+```bash
+python -m scripts.live_check https://stash-phon.onrender.com
+```
+
+It needs no credentials beyond the URL. If a deploy misbehaves,
+`python -m scripts.render_logs build` (or `app`) prints the tail of the
+relevant Render log without opening the dashboard.
 
 `chat_loop_test` scripts a stand-in LLM so the parts we own are asserted
 deterministically: that tool calls are dispatched through MCP, that results are
@@ -166,12 +182,13 @@ wrong host. Auto-deploy on push to `main` is enabled in the blueprint.
 The schema is created by the build command. `scripts/schema.sql` is entirely
 `CREATE ... IF NOT EXISTS`, so re-running it on every deploy is safe.
 
-One consequence worth knowing: because the schema step runs during **build**,
-`DATABASE_URL` must be the database's *external* connection string. Render's
-internal string is faster but is not reachable from the build environment. The
-tidier fix is a pre-deploy command, which runs in the runtime network — but
-that requires a paid instance type, so on the free plan the external string is
-the right trade-off.
+Use the database's **internal** connection string, not the external one. A
+Render Postgres created through the API starts with an empty IP allow list and
+refuses public connections outright, so the external string fails from
+everywhere — including the first build, with a misleading `SSL connection has
+been closed unexpectedly`. The internal host is reachable from both the build
+environment and the running service, and it keeps the database off the public
+internet, so there is no reason to open the allow list.
 
 ## Data model
 
