@@ -91,6 +91,34 @@ the registry lock is never held across a spawn, so one user's slow start does
 not queue behind another's, while concurrent turns for the same user await a
 single shared future instead of racing to create duplicate processes.
 
+### Watching a turn happen
+
+A turn is several seconds of otherwise invisible work — acquiring an MCP
+session, one or two model round trips, and the tool calls between them — so the
+UI streams its progress instead of showing a spinner. `POST /api/chat/stream`
+emits server-sent events (`step`, `tool_call`, `tool_result`, `done`) and the
+browser renders them as a timeline: each step timed, tool calls showing their
+arguments and a summary of what came back, collapsing to *"Worked for 4.4s ·
+1 tool"* once finished and expandable afterwards. It doubles as a window onto
+the architecture, since every bookmark operation visibly goes through a tool.
+
+`POST /api/chat` still returns the whole turn as JSON for non-streaming callers.
+Both share one implementation — `run_chat_turn` drains the same generator the
+stream does — so they cannot drift apart.
+
+The model's own output is not streamed token by token. Gemini returns a short
+reply in about two coarse chunks, so streaming it would add little beyond what
+the step events already convey, while requiring the scripted-LLM stub that keeps
+`chat_loop_test` deterministic to be rewritten around chunk accumulation. The
+reply is revealed progressively in the browser instead, which is presentation
+only and is commented as such.
+
+One deployment detail worth keeping: the endpoint sets `X-Accel-Buffering: no`.
+Without it Render's proxy buffers the whole response and every event arrives at
+once, which looks exactly like the stall the streaming was meant to remove.
+`scripts/live_check.py` asserts that the first event lands well before the last,
+so that regression would fail the check rather than merely look wrong.
+
 ## Local setup
 
 Requires Python 3.11+ and a Postgres you can reach.
