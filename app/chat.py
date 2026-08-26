@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from time import perf_counter
 from typing import Any
@@ -76,14 +77,27 @@ def _assistant_message(message: Any) -> dict[str, Any]:
     return payload
 
 
-async def run_chat_turn(
+def _decode(result: str) -> Any:
+    """Tool results arrive as JSON strings; give the UI real objects."""
+    try:
+        return json.loads(result)
+    except json.JSONDecodeError:
+        return result
+
+
+async def stream_chat_turn(
     user_id: str, history: list[dict[str, Any]], user_message: str
-) -> ChatTurn:
-    """Run one user turn to completion, dispatching tool calls through MCP.
+) -> AsyncIterator[dict[str, Any]]:
+    """Run one user turn, yielding progress events as they happen.
 
     Loops until the model answers in natural language or we hit MAX_TOOL_HOPS,
     at which point we ask for a final answer with the tools withheld so the user
     always gets a reply instead of a spinning runaway.
+
+    Yields JSON-serialisable dicts: `step` when the stage changes, a
+    `tool_call`/`tool_result` pair around every MCP dispatch, and exactly one
+    closing `done`. This is the only implementation of a turn — `run_chat_turn`
+    drains it — so the streaming and plain endpoints cannot drift apart.
     """
     client = _client()
     messages: list[dict[str, Any]] = [
@@ -93,10 +107,13 @@ async def run_chat_turn(
     ]
     tools_used: list[str] = []
 
+    yield {"type": "step", "stage": "connecting"}
+
     async with toolbox_for_user(user_id) as toolbox:
         tool_defs = await toolbox.openai_tools()
 
         for hop in range(MAX_TOOL_HOPS):
+            yield {"type": "step", "stage": "thinking", "hop": hop}
             try:
                 started = perf_counter()
                 response = await client.chat.completions.create(
@@ -116,7 +133,12 @@ async def run_chat_turn(
             messages.append(_assistant_message(message))
 
             if not message.tool_calls:
-                return ChatTurn(reply=message.content or "", tools_used=tools_used)
+                yield {
+                    "type": "done",
+                    "reply": message.content or "",
+                    "tools_used": tools_used,
+                }
+                return
 
             for call in message.tool_calls:
                 name = call.function.name
@@ -124,11 +146,29 @@ async def run_chat_turn(
                 try:
                     arguments = json.loads(call.function.arguments or "{}")
                 except json.JSONDecodeError:
+                    yield {"type": "tool_call", "name": name, "arguments": {}}
                     result = json.dumps(
                         {"error": "Arguments were not valid JSON; try again."}
                     )
+                    yield {
+                        "type": "tool_result",
+                        "name": name,
+                        "ok": False,
+                        "result": {"error": "the model sent malformed arguments"},
+                        "seconds": 0.0,
+                    }
                 else:
+                    yield {"type": "tool_call", "name": name, "arguments": arguments}
+                    started = perf_counter()
                     result = await toolbox.call(name, arguments)
+                    payload = _decode(result)
+                    yield {
+                        "type": "tool_result",
+                        "name": name,
+                        "ok": not (isinstance(payload, dict) and "error" in payload),
+                        "result": payload,
+                        "seconds": round(perf_counter() - started, 3),
+                    }
 
                 messages.append(
                     {"role": "tool", "tool_call_id": call.id, "content": result}
@@ -136,6 +176,7 @@ async def run_chat_turn(
 
         # Hop budget exhausted: force a closing message with no tools available.
         logger.warning("Tool hop cap (%s) reached for user %s", MAX_TOOL_HOPS, user_id)
+        yield {"type": "step", "stage": "wrapping_up"}
         try:
             final = await client.chat.completions.create(
                 model=AI_MODEL,
@@ -154,6 +195,19 @@ async def run_chat_turn(
             logger.exception("Model wrap-up call failed")
             raise ChatUnavailable(f"The co-pilot is unavailable: {exc}") from exc
 
-        return ChatTurn(
-            reply=final.choices[0].message.content or "", tools_used=tools_used
-        )
+        yield {
+            "type": "done",
+            "reply": final.choices[0].message.content or "",
+            "tools_used": tools_used,
+        }
+
+
+async def run_chat_turn(
+    user_id: str, history: list[dict[str, Any]], user_message: str
+) -> ChatTurn:
+    """Run a turn to completion for callers that only want the answer."""
+    turn = ChatTurn(reply="")
+    async for event in stream_chat_turn(user_id, history, user_message):
+        if event["type"] == "done":
+            turn = ChatTurn(reply=event["reply"], tools_used=event["tools_used"])
+    return turn

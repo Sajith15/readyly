@@ -12,8 +12,10 @@ LLM -> MCP -> Postgres path works in production.
 """
 from __future__ import annotations
 
+import json
 import secrets
 import sys
+from time import perf_counter
 
 import httpx
 
@@ -123,6 +125,44 @@ def main(argv: list[str]) -> int:
         )
         check("the saved bookmark appears", mentions_bookmark(reply), reply[:200])
         print(f"         reply: {reply[:160]}")
+
+        step("Progress is streamed while the turn runs")
+        seen: list[tuple[float, dict]] = []
+        started = perf_counter()
+        with user.stream(
+            "POST",
+            f"{base}/api/chat/stream",
+            json={"message": "Search my bookmarks for example."},
+        ) as response:
+            check(
+                "the stream opens as server-sent events",
+                response.status_code == 200
+                and "text/event-stream" in response.headers.get("content-type", ""),
+                f"{response.status_code} {response.headers.get('content-type')}",
+            )
+            for line in response.iter_lines():
+                if line.startswith("data: "):
+                    seen.append((perf_counter() - started, json.loads(line[6:])))
+
+        kinds = [event["type"] for _, event in seen]
+        check("events arrive", bool(seen), str(kinds))
+        check("the turn is closed exactly once", kinds.count("done") == 1, str(kinds))
+        check(
+            "a tool call is announced before its result",
+            "tool_call" in kinds
+            and kinds.index("tool_call") < kinds.index("tool_result"),
+            str(kinds),
+        )
+        # The point of streaming: the first event must land well before the
+        # last, otherwise a proxy is buffering and the UI still shows a stall.
+        if len(seen) >= 2:
+            first, last = seen[0][0], seen[-1][0]
+            check(
+                "the first event lands well before the last",
+                first < last - 0.2,
+                f"first {first:.2f}s, last {last:.2f}s",
+            )
+            print(f"         {len(seen)} events over {last:.2f}s: {' -> '.join(kinds)}")
 
     step("Persistence across a fresh login")
     with httpx.Client(timeout=TIMEOUT, follow_redirects=True) as returning:

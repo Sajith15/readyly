@@ -302,6 +302,144 @@ input:focus {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
+/* --- activity timeline --------------------------------------------------- */
+
+.activity {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  overflow: hidden;
+  min-width: 260px;
+}
+
+.activity-header {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 10px 13px;
+  background: none;
+  border: 0;
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.activity-header:hover { color: var(--text); }
+
+.activity-title { flex: 1; }
+
+/* Spinner while the turn runs; a static dot once it has settled. */
+.activity-spinner {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  flex-shrink: 0;
+}
+
+.activity.is-running .activity-spinner { animation: spin 0.7s linear infinite; }
+
+.activity:not(.is-running) .activity-spinner {
+  border: 0;
+  background: var(--muted);
+  width: 7px;
+  height: 7px;
+  margin: 0 3px;
+}
+
+.activity-chevron {
+  width: 7px;
+  height: 7px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg);
+  transition: transform 0.15s ease;
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+
+.activity.is-collapsed .activity-chevron { transform: rotate(-45deg); }
+
+.activity-body {
+  padding: 2px 13px 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.activity.is-collapsed .activity-body { display: none; }
+
+.activity-row {
+  display: grid;
+  grid-template-columns: 14px 1fr auto;
+  align-items: baseline;
+  gap: 9px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.activity-row.is-done .activity-label { color: var(--text); }
+
+.activity-mark {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1.5px solid var(--border);
+  justify-self: center;
+  align-self: center;
+}
+
+.activity-row.is-running .activity-mark {
+  border-color: var(--accent);
+  animation: pulse 1.1s ease-in-out infinite;
+}
+
+.activity-row.is-done .activity-mark {
+  border-color: var(--notice-fg);
+  background: var(--notice-fg);
+}
+
+.activity-row.is-failed .activity-mark {
+  border-color: var(--danger);
+  background: var(--danger);
+}
+
+.activity-timing {
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.activity-args {
+  grid-column: 2 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 5px;
+}
+
+.activity-chip {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+
 .typing { display: flex; gap: 4px; align-items: center; padding: 15px; }
 
 .typing span {

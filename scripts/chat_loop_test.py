@@ -165,6 +165,68 @@ async def test_hop_cap_ends_a_runaway(user_id: str) -> None:
           str(stub.calls_without_tools))
 
 
+async def test_progress_events_describe_the_turn(user_id: str) -> None:
+    print("\nThe turn reports its progress as it happens")
+
+    stub = ScriptedLLM([
+        reply(None, [tool_call("call_1", "add_bookmark",
+                               url="https://events.example", tags=["reading"])]),
+        reply("Saved it."),
+    ])
+
+    original = chat._client
+    chat._client = lambda: stub
+    try:
+        events = [
+            event
+            async for event in chat.stream_chat_turn(user_id, [], "Save events.example")
+        ]
+    finally:
+        chat._client = original
+
+    kinds = [event["type"] for event in events]
+    check("the session step comes first",
+          events[0] == {"type": "step", "stage": "connecting"}, str(events[0]))
+    check("the model is reported as thinking",
+          any(e["type"] == "step" and e["stage"] == "thinking" for e in events),
+          str(kinds))
+
+    calls = [e for e in events if e["type"] == "tool_call"]
+    check("the tool call is announced before it runs",
+          len(calls) == 1 and calls[0]["name"] == "add_bookmark", str(calls))
+    check("its arguments are included for display",
+          calls[0]["arguments"].get("url") == "https://events.example",
+          str(calls[0].get("arguments")))
+    check("the call is announced before its result",
+          kinds.index("tool_call") < kinds.index("tool_result"), str(kinds))
+
+    results = [e for e in events if e["type"] == "tool_result"]
+    check("the result is reported as succeeding",
+          len(results) == 1 and results[0]["ok"] is True, str(results))
+    check("the result carries the saved bookmark",
+          isinstance(results[0]["result"], dict) and "saved" in results[0]["result"],
+          str(results[0]["result"])[:200])
+    check("the result is timed", isinstance(results[0]["seconds"], float),
+          str(results[0].get("seconds")))
+
+    check("exactly one closing event", kinds.count("done") == 1, str(kinds))
+    check("it closes the turn", kinds[-1] == "done", str(kinds))
+    check("the closing event carries the reply",
+          events[-1]["reply"] == "Saved it.", str(events[-1]))
+    check("and the tools that were used",
+          events[-1]["tools_used"] == ["add_bookmark"], str(events[-1]))
+
+    # The plain endpoint drains this same generator, so the two cannot drift.
+    stub2 = ScriptedLLM([
+        reply(None, [tool_call("call_2", "list_bookmarks")]),
+        reply("Here they are."),
+    ])
+    turn = await run_with(stub2, user_id, "List them")
+    check("draining the stream yields the same answer",
+          turn.reply == "Here they are." and turn.tools_used == ["list_bookmarks"],
+          f"{turn.reply} / {turn.tools_used}")
+
+
 async def main() -> int:
     db.open_pool()
     user = repository.create_user(
@@ -176,6 +238,7 @@ async def main() -> int:
         await test_tool_calls_are_dispatched_through_mcp(user_id)
         await test_unknown_tool_is_reported_not_raised(user_id)
         await test_hop_cap_ends_a_runaway(user_id)
+        await test_progress_events_describe_the_turn(user_id)
     finally:
         await close_all_sessions()
         repository.delete_users([user_id])
