@@ -231,13 +231,22 @@ internet, so there is no reason to open the allow list.
 
 Things I would fix first, in order of how much they matter:
 
-1. **A subprocess per chat turn.** `toolbox_for_user` spawns a fresh MCP server
-   for every message, which costs roughly a second of startup and a database
-   connection. I chose it because it makes the scoping guarantee trivial to
-   audit — a process only ever knows one user. The fix is a pooled, keyed
-   session cache with idle eviction, which is genuinely fiddly to get right
-   around async context-manager lifetimes, so it was the wrong thing to attempt
-   against the clock.
+1. **A subprocess per chat turn — and it dominates latency.** `toolbox_for_user`
+   spawns a fresh MCP server for every message. Measured on the deployed free
+   instance with `python -m scripts.profile_chat <url>`, a turn takes ~11s, of
+   which the subprocess lifecycle is ~8.5s and the two model round trips only
+   ~2s. Almost all of the spawn cost is `import mcp` — 1.3s of a 1.4s module
+   import locally, and roughly 6-7s on a throttled 0.1-CPU instance. The
+   database work itself is under 100ms.
+
+   I chose per-turn spawning because it makes the scoping guarantee trivial to
+   audit: a process only ever knows one user. That reasoning still holds, but
+   the price is much higher than the "roughly a second" I assumed from local
+   numbers. The fix is a keyed session cache with idle eviction, which would cut
+   a typical turn from ~11s to ~3s; it is fiddly to get right around async
+   context-manager lifetimes, which is why it is listed here rather than done.
+   Note that the guarantee is preserved either way, since the cache key is the
+   user id and a process is never handed to a different user.
 2. **Chat history is in-process memory.** `app/conversations.py` keeps the last
    20 turns per user in a dict. It resets on restart and would not be shared
    across multiple Render instances. A `messages` table would fix both; I left
