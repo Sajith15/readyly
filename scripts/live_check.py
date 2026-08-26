@@ -153,6 +153,18 @@ def main(argv: list[str]) -> int:
             and kinds.index("tool_call") < kinds.index("tool_result"),
             str(kinds),
         )
+        deltas = [event for _, event in seen if event["type"] == "delta"]
+        check("the reply text is streamed", bool(deltas), str(kinds))
+        if deltas:
+            streamed = "".join(event["text"] for event in deltas)
+            final = next(
+                (e["reply"] for _, e in seen if e["type"] == "done"), ""
+            )
+            check(
+                "the streamed pieces match the final reply",
+                streamed.strip() == final.strip(),
+                f"streamed {len(streamed)} chars, final {len(final)}",
+            )
         # The point of streaming: the first event must land well before the
         # last, otherwise a proxy is buffering and the UI still shows a stall.
         if len(seen) >= 2:

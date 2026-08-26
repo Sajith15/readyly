@@ -106,12 +106,27 @@ the architecture, since every bookmark operation visibly goes through a tool.
 Both share one implementation — `run_chat_turn` drains the same generator the
 stream does — so they cannot drift apart.
 
-The model's own output is not streamed token by token. Gemini returns a short
-reply in about two coarse chunks, so streaming it would add little beyond what
-the step events already convey, while requiring the scripted-LLM stub that keeps
-`chat_loop_test` deterministic to be rewritten around chunk accumulation. The
-reply is revealed progressively in the browser instead, which is presentation
-only and is commented as such.
+The model's reply is streamed too, as `delta` events. How much that buys you
+depends entirely on the provider, and it is worth knowing which you have:
+
+| Reply | First text | Fully arrived | Chunks |
+|---|---|---|---|
+| 896 chars, via Gemini | 4.75s | 5.49s | 6 (82-191 chars each) |
+| 1053 chars, via Gemini | 6.61s | 6.97s | 4 (180-305 chars each) |
+
+Gemini's compatibility layer withholds output for 87-95% of the generation and
+then flushes it in a few large bursts — those are not tokens arriving, they are
+a finished answer being chopped up. Against OpenAI the same code streams
+properly, which is the reason it is written this way: the provider is a
+configuration value, so the UI should not assume one.
+
+Two details follow from that. Providers disagree about how tool calls arrive —
+OpenAI sends indexed fragments whose arguments must be concatenated, Gemini
+sends each call whole with no index — so `_StreamedMessage` handles both and
+`chat_loop_test` feeds it deliberately fragmented chunks. And the browser does
+not render deltas straight to the DOM, since a 200-character burst would make
+the answer lurch; it holds a target string and catches up smoothly, which reads
+well whether the pieces are large or small.
 
 One deployment detail worth keeping: the endpoint sets `X-Accel-Buffering: no`.
 Without it Render's proxy buffers the whole response and every event arrives at

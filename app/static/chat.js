@@ -87,15 +87,20 @@
 
     const tools = options && options.tools;
     if (tools && tools.length) {
-      const badges = document.createElement("div");
-      badges.className = "tool-badges";
-      badges.textContent = "via MCP: " + [...new Set(tools)].join(", ");
-      wrapper.appendChild(badges);
+      addToolBadges(wrapper, tools);
     }
 
     messages.appendChild(wrapper);
     scrollDown(true);
     return wrapper;
+  }
+
+  function addToolBadges(wrapper, tools) {
+    if (!tools || !tools.length) return;
+    const badges = document.createElement("div");
+    badges.className = "tool-badges";
+    badges.textContent = "via MCP: " + [...new Set(tools)].join(", ");
+    wrapper.appendChild(badges);
   }
 
   // --- how each tool is described in the timeline ---------------------------
@@ -287,32 +292,90 @@
     };
   }
 
-  // --- progressive reveal of the final answer -------------------------------
+  // --- the answer as it streams in ------------------------------------------
 
-  // The reply arrives complete: the model's own output is not streamed token by
-  // token, so this is presentation only. It keeps a long answer from landing as
-  // one block after a visible pause.
-  function reveal(bubble, text) {
-    return new Promise(function (resolve) {
-      const total = text.length;
-      // Long answers should not take proportionally longer to appear.
-      const perFrame = Math.max(2, Math.ceil(total / 90));
-      let shown = 0;
+  // Text arrives as deltas, but how big those are depends entirely on the
+  // provider: OpenAI sends a few characters at a time, Gemini sends a couple of
+  // hundred at once. Rather than render deltas straight to the DOM and have the
+  // answer lurch, this keeps a target string and catches up to it smoothly, so
+  // the same code reads well against either.
+  function createLiveText() {
+    let wrapper = null;
+    let bubble = null;
+    let target = "";
+    let shown = 0;
+    let running = false;
+    let onCaughtUp = null;
 
-      function tick() {
-        shown = Math.min(total, shown + perFrame);
-        bubble.textContent = text.slice(0, shown);
-        scrollDown(false);
-        if (shown < total) {
-          requestAnimationFrame(tick);
-          return;
+    function ensure() {
+      if (wrapper) return;
+      wrapper = addMessage("assistant", "");
+      bubble = wrapper.querySelector(".bubble");
+      bubble.textContent = "";
+    }
+
+    function pump() {
+      if (shown >= target.length) {
+        running = false;
+        if (onCaughtUp) {
+          const finish = onCaughtUp;
+          onCaughtUp = null;
+          finish();
         }
-        bubble.innerHTML = render(text);
-        scrollDown(false);
-        resolve();
+        return;
       }
-      requestAnimationFrame(tick);
-    });
+      // Catch up proportionally: a big burst is absorbed quickly, a trickle
+      // stays readable.
+      const step = Math.max(2, Math.ceil((target.length - shown) / 24));
+      shown = Math.min(target.length, shown + step);
+      bubble.textContent = target.slice(0, shown);
+      scrollDown(false);
+      requestAnimationFrame(pump);
+    }
+
+    function start() {
+      if (!running) {
+        running = true;
+        requestAnimationFrame(pump);
+      }
+    }
+
+    return {
+      push: function (text) {
+        ensure();
+        target += text;
+        start();
+      },
+
+      // Text emitted before a tool call is preamble, not the answer. It stays
+      // in the history sent to the model, but showing it would be misleading.
+      discard: function () {
+        if (!wrapper) return;
+        wrapper.remove();
+        wrapper = null;
+        bubble = null;
+        target = "";
+        shown = 0;
+        running = false;
+        onCaughtUp = null;
+      },
+
+      // The closing event carries the authoritative reply, which also covers
+      // providers that return no deltas at all.
+      finish: function (reply, tools) {
+        ensure();
+        target = reply || "(no reply)";
+        if (shown > target.length) {
+          shown = 0;
+        }
+        onCaughtUp = function () {
+          bubble.innerHTML = render(target);
+          addToolBadges(wrapper, tools);
+          scrollDown(false);
+        };
+        start();
+      },
+    };
   }
 
   // --- the turn -------------------------------------------------------------
@@ -324,25 +387,27 @@
     send.disabled = true;
 
     const activity = createActivity();
+    const live = createLiveText();
     let finished = false;
 
     function handle(event) {
       if (event.type === "step") {
         activity.step(event.stage);
+      } else if (event.type === "delta") {
+        live.push(event.text);
       } else if (event.type === "tool_call") {
+        live.discard();
         activity.toolCall(event.name, event.arguments);
       } else if (event.type === "tool_result") {
         activity.toolResult(event.name, event.ok, event.result);
       } else if (event.type === "done") {
         finished = true;
         activity.finish(event.tools_used);
-        const wrapper = addMessage("assistant", "", { tools: event.tools_used });
-        const bubble = wrapper.querySelector(".bubble");
-        bubble.textContent = "";
-        reveal(bubble, event.reply || "(no reply)");
+        live.finish(event.reply, event.tools_used);
       } else if (event.type === "error") {
         finished = true;
         activity.fail();
+        live.discard();
         addMessage("error", event.message || "Something went wrong.");
       }
     }

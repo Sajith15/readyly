@@ -32,39 +32,88 @@ def check(label: str, condition: bool, detail: str = "") -> None:
 
 
 def tool_call(call_id: str, name: str, **arguments) -> SimpleNamespace:
-    return SimpleNamespace(
-        id=call_id,
-        type="function",
-        function=SimpleNamespace(name=name, arguments=json.dumps(arguments)),
-    )
+    return SimpleNamespace(id=call_id, name=name, arguments=json.dumps(arguments))
 
 
-def reply(content: str | None, tool_calls: list | None = None) -> SimpleNamespace:
-    message = SimpleNamespace(content=content, tool_calls=tool_calls)
-    return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+def _chunk(content=None, tool_calls=None) -> SimpleNamespace:
+    delta = SimpleNamespace(content=content, tool_calls=tool_calls)
+    return SimpleNamespace(choices=[SimpleNamespace(delta=delta)])
+
+
+def reply(content: str | None, tool_calls: list | None = None) -> list:
+    """The chunks a provider would stream for one response.
+
+    Text and tool-call arguments are both split across chunks on purpose: that
+    is what OpenAI actually sends, and reassembling it is the part of the loop
+    worth testing.
+    """
+    chunks = []
+    for index, call in enumerate(tool_calls or []):
+        chunks.append(
+            _chunk(tool_calls=[
+                SimpleNamespace(
+                    index=index,
+                    id=call.id,
+                    function=SimpleNamespace(name=call.name, arguments=""),
+                )
+            ])
+        )
+        middle = len(call.arguments) // 2
+        for fragment in (call.arguments[:middle], call.arguments[middle:]):
+            chunks.append(
+                _chunk(tool_calls=[
+                    SimpleNamespace(
+                        index=index,
+                        id=None,
+                        function=SimpleNamespace(name=None, arguments=fragment),
+                    )
+                ])
+            )
+    if content:
+        middle = len(content) // 2
+        chunks.append(_chunk(content=content[:middle]))
+        chunks.append(_chunk(content=content[middle:]))
+    return chunks
+
+
+class _Stream:
+    """The async iterator the OpenAI SDK returns when stream=True."""
+
+    def __init__(self, chunks: list) -> None:
+        self._chunks = list(chunks)
+
+    def __aiter__(self):
+        return self._iterate()
+
+    async def _iterate(self):
+        for chunk in self._chunks:
+            yield chunk
 
 
 class ScriptedLLM:
-    """Stands in for AsyncOpenAI, returning a canned response per turn."""
+    """Stands in for AsyncOpenAI, streaming a canned response per turn."""
 
-    def __init__(self, script: list, wrap_up: SimpleNamespace | None = None) -> None:
+    def __init__(self, script: list, wrap_up: list | None = None) -> None:
         self.script = list(script)
         self.wrap_up = wrap_up
         self.received: list[list[dict]] = []
         self.tool_defs_seen: list | None = None
         self.calls_without_tools = 0
 
-    async def _create(self, *, model, messages, tools=None, tool_choice=None):
+    async def _create(
+        self, *, model, messages, tools=None, tool_choice=None, stream=False
+    ):
         # Snapshot: the loop keeps appending to the same list, so storing the
         # reference would show every call the final state.
         self.received.append(list(messages))
         if tools is None:
             # The hop-cap wrap-up call, which deliberately offers no tools.
             self.calls_without_tools += 1
-            return self.wrap_up
+            return _Stream(self.wrap_up or [])
         self.tool_defs_seen = tools
         # A single-entry script repeats, which is how the runaway case is built.
-        return self.script.pop(0) if len(self.script) > 1 else self.script[0]
+        chunks = self.script.pop(0) if len(self.script) > 1 else self.script[0]
+        return _Stream(chunks)
 
     @property
     def chat(self):
@@ -208,6 +257,14 @@ async def test_progress_events_describe_the_turn(user_id: str) -> None:
           str(results[0]["result"])[:200])
     check("the result is timed", isinstance(results[0]["seconds"], float),
           str(results[0].get("seconds")))
+
+    deltas = [e for e in events if e["type"] == "delta"]
+    check("the reply is streamed in pieces", len(deltas) > 1, str(len(deltas)))
+    check("the pieces reassemble into the reply",
+          "".join(d["text"] for d in deltas) == "Saved it.",
+          "".join(d["text"] for d in deltas))
+    check("streaming starts before the turn closes",
+          kinds.index("delta") < kinds.index("done"), str(kinds))
 
     check("exactly one closing event", kinds.count("done") == 1, str(kinds))
     check("it closes the turn", kinds[-1] == "done", str(kinds))

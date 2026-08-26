@@ -58,23 +58,79 @@ def _client() -> AsyncOpenAI:
     return AsyncOpenAI(api_key=AI_API_KEY, base_url=AI_BASE_URL)
 
 
-def _assistant_message(message: Any) -> dict[str, Any]:
-    """Rebuild the assistant turn explicitly, so we send back exactly the fields
-    the API expects rather than a dump full of nulls."""
-    payload: dict[str, Any] = {"role": "assistant", "content": message.content}
-    if message.tool_calls:
-        payload["tool_calls"] = [
-            {
-                "id": call.id,
-                "type": "function",
-                "function": {
-                    "name": call.function.name,
-                    "arguments": call.function.arguments,
-                },
-            }
-            for call in message.tool_calls
+@dataclass
+class _ToolCall:
+    id: str
+    name: str
+    arguments: str
+
+
+class _StreamedMessage:
+    """Reassembles a streamed completion into one assistant message.
+
+    Providers disagree about how tool calls arrive. OpenAI sends fragments
+    carrying an `index`, with the arguments split across chunks to be
+    concatenated. Gemini's compatibility layer sends each call whole, with no
+    index at all. Both are handled: an id starts a new call, anything without
+    one continues the call in progress.
+    """
+
+    def __init__(self) -> None:
+        self._content: list[str] = []
+        self._slots: dict[int, dict[str, str]] = {}
+
+    def add(self, delta: Any) -> None:
+        content = getattr(delta, "content", None)
+        if content:
+            self._content.append(content)
+        for call in getattr(delta, "tool_calls", None) or []:
+            self._add_call(call)
+
+    def _add_call(self, call: Any) -> None:
+        index = getattr(call, "index", None)
+        if index is None:
+            index = len(self._slots) if call.id else max(self._slots, default=0)
+
+        slot = self._slots.setdefault(index, {"id": "", "name": "", "arguments": ""})
+        if call.id:
+            slot["id"] = call.id
+        function = getattr(call, "function", None)
+        if function is not None:
+            if function.name:
+                slot["name"] = function.name
+            if function.arguments:
+                slot["arguments"] += function.arguments
+
+    @property
+    def content(self) -> str:
+        return "".join(self._content)
+
+    @property
+    def tool_calls(self) -> list[_ToolCall]:
+        return [
+            _ToolCall(
+                id=self._slots[key]["id"],
+                name=self._slots[key]["name"],
+                arguments=self._slots[key]["arguments"],
+            )
+            for key in sorted(self._slots)
         ]
-    return payload
+
+    def as_message(self) -> dict[str, Any]:
+        """The assistant turn to replay, with exactly the fields the API expects
+        rather than a dump full of nulls."""
+        payload: dict[str, Any] = {"role": "assistant", "content": self.content or None}
+        calls = self.tool_calls
+        if calls:
+            payload["tool_calls"] = [
+                {
+                    "id": call.id,
+                    "type": "function",
+                    "function": {"name": call.name, "arguments": call.arguments},
+                }
+                for call in calls
+            ]
+        return payload
 
 
 def _decode(result: str) -> Any:
@@ -114,14 +170,26 @@ async def stream_chat_turn(
 
         for hop in range(MAX_TOOL_HOPS):
             yield {"type": "step", "stage": "thinking", "hop": hop}
+            message = _StreamedMessage()
             try:
                 started = perf_counter()
-                response = await client.chat.completions.create(
+                stream = await client.chat.completions.create(
                     model=AI_MODEL,
                     messages=messages,
                     tools=tool_defs,
                     tool_choice="auto",
+                    stream=True,
                 )
+                async for chunk in stream:
+                    if not chunk.choices:
+                        continue
+                    delta = chunk.choices[0].delta
+                    if delta is None:
+                        continue
+                    message.add(delta)
+                    text = getattr(delta, "content", None)
+                    if text:
+                        yield {"type": "delta", "text": text}
                 logger.info(
                     "model round trip %.2fs (hop %s)", perf_counter() - started, hop
                 )
@@ -129,22 +197,22 @@ async def stream_chat_turn(
                 logger.exception("Model call failed on hop %s", hop)
                 raise ChatUnavailable(f"The co-pilot is unavailable: {exc}") from exc
 
-            message = response.choices[0].message
-            messages.append(_assistant_message(message))
+            messages.append(message.as_message())
+            calls = message.tool_calls
 
-            if not message.tool_calls:
+            if not calls:
                 yield {
                     "type": "done",
-                    "reply": message.content or "",
+                    "reply": message.content,
                     "tools_used": tools_used,
                 }
                 return
 
-            for call in message.tool_calls:
-                name = call.function.name
+            for call in calls:
+                name = call.name
                 tools_used.append(name)
                 try:
-                    arguments = json.loads(call.function.arguments or "{}")
+                    arguments = json.loads(call.arguments or "{}")
                 except json.JSONDecodeError:
                     yield {"type": "tool_call", "name": name, "arguments": {}}
                     result = json.dumps(
@@ -177,8 +245,9 @@ async def stream_chat_turn(
         # Hop budget exhausted: force a closing message with no tools available.
         logger.warning("Tool hop cap (%s) reached for user %s", MAX_TOOL_HOPS, user_id)
         yield {"type": "step", "stage": "wrapping_up"}
+        final = _StreamedMessage()
         try:
-            final = await client.chat.completions.create(
+            stream = await client.chat.completions.create(
                 model=AI_MODEL,
                 messages=[
                     *messages,
@@ -190,16 +259,23 @@ async def stream_chat_turn(
                         ),
                     },
                 ],
+                stream=True,
             )
+            async for chunk in stream:
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                if delta is None:
+                    continue
+                final.add(delta)
+                text = getattr(delta, "content", None)
+                if text:
+                    yield {"type": "delta", "text": text}
         except OpenAIError as exc:
             logger.exception("Model wrap-up call failed")
             raise ChatUnavailable(f"The co-pilot is unavailable: {exc}") from exc
 
-        yield {
-            "type": "done",
-            "reply": final.choices[0].message.content or "",
-            "tools_used": tools_used,
-        }
+        yield {"type": "done", "reply": final.content, "tools_used": tools_used}
 
 
 async def run_chat_turn(
