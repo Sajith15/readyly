@@ -134,9 +134,25 @@ must never be committed.
 
 ## Deploying to Render
 
-The repo includes `render.yaml`, so **New → Blueprint** provisions the web
-service and its Postgres together and wires `DATABASE_URL` for you. To set it up
-by hand instead:
+Three ways, in descending order of convenience.
+
+**Scripted, via the Render API.** With `RENDER_API_KEY` in your `.env`:
+
+```bash
+python -m scripts.deploy_render https://github.com/you/stash
+```
+
+This creates a free Postgres and a free web service, pushes the environment
+variables from your local `.env`, waits for the build, and prints the public
+URL. It is idempotent — re-running updates the existing resources and
+redeploys. Link your GitHub account in the Render dashboard first, or Render
+cannot configure auto-deploy on push.
+
+**From the blueprint.** The repo includes `render.yaml`, so **New → Blueprint**
+provisions the web service and its Postgres together and wires `DATABASE_URL`
+for you.
+
+**By hand:**
 
 - **Build command:** `pip install -r requirements.txt && python -m scripts.init_db`
 - **Start command:** `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
@@ -149,6 +165,13 @@ wrong host. Auto-deploy on push to `main` is enabled in the blueprint.
 
 The schema is created by the build command. `scripts/schema.sql` is entirely
 `CREATE ... IF NOT EXISTS`, so re-running it on every deploy is safe.
+
+One consequence worth knowing: because the schema step runs during **build**,
+`DATABASE_URL` must be the database's *external* connection string. Render's
+internal string is faster but is not reachable from the build environment. The
+tidier fix is a pre-deploy command, which runs in the runtime network — but
+that requires a paid instance type, so on the free plan the external string is
+the right trade-off.
 
 ## Data model
 
