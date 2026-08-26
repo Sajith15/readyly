@@ -113,8 +113,9 @@ python -m scripts.live_check https://stash-phon.onrender.com
 ```
 
 It needs no credentials beyond the URL. If a deploy misbehaves,
-`python -m scripts.render_logs build` (or `app`) prints the tail of the
-relevant Render log without opening the dashboard.
+`python -m scripts.render_logs build` (or `app`) prints the tail of the relevant
+Render log, and `python -m scripts.render_status` shows recent deploys with what
+triggered each one — both without opening the dashboard.
 
 `chat_loop_test` scripts a stand-in LLM so the parts we own are asserted
 deterministically: that tool calls are dispatched through MCP, that results are
@@ -161,8 +162,14 @@ python -m scripts.deploy_render https://github.com/you/stash
 This creates a free Postgres and a free web service, pushes the environment
 variables from your local `.env`, waits for the build, and prints the public
 URL. It is idempotent — re-running updates the existing resources and
-redeploys. Link your GitHub account in the Render dashboard first, or Render
-cannot configure auto-deploy on push.
+redeploys.
+
+One caveat: Render clones a *public* repo anonymously, so the build works
+whether or not your GitHub account is linked — but installing the push webhook
+does need that link. Until you connect GitHub under **Account Settings →
+GitHub**, the service reports `autoDeploy: yes` while pushes silently fail to
+trigger anything. `python -m scripts.render_status` shows whether the last
+deploy came from a push or from the API, which is the quickest way to tell.
 
 **From the blueprint.** The repo includes `render.yaml`, so **New → Blueprint**
 provisions the web service and its Postgres together and wires `DATABASE_URL`
