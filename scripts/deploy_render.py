@@ -229,21 +229,30 @@ def service_url(service: dict) -> str | None:
     return (service.get("serviceDetails") or {}).get("url")
 
 
-def latest_deploy(render: Render, service_id: str) -> dict | None:
-    results = render.request(
-        "GET", f"/services/{service_id}/deploys", params={"limit": 1}
+def trigger_deploy(render: Render, service_id: str) -> str:
+    """Kick off a deploy explicitly and return its id.
+
+    Updating environment variables through the API does not reliably start a
+    build, and polling 'the latest deploy' races against Render creating it, so
+    we ask for one and then track that exact id.
+    """
+    deploy = render.request(
+        "POST", f"/services/{service_id}/deploys", json={"clearCache": "do_not_clear"}
     )
-    if not results:
-        return None
-    return results[0].get("deploy", results[0])
+    deploy_id = deploy.get("id") or deploy.get("deploy", {}).get("id")
+    if not deploy_id:
+        raise RenderError(f"Could not read a deploy id from: {deploy}")
+    return deploy_id
 
 
-def wait_for_deploy(render: Render, service_id: str, timeout: int = 1800) -> str:
+def wait_for_deploy(
+    render: Render, service_id: str, deploy_id: str, timeout: int = 1800
+) -> str:
     deadline = time.time() + timeout
     last = None
     while time.time() < deadline:
-        deploy = latest_deploy(render, service_id)
-        status = (deploy or {}).get("status")
+        deploy = render.request("GET", f"/services/{service_id}/deploys/{deploy_id}")
+        status = deploy.get("status")
         if status != last:
             detail(f"Deploy status: {status}")
             last = status
@@ -294,11 +303,12 @@ def main(argv: list[str]) -> int:
         connection = render.request(
             "GET", f"/postgres/{database['id']}/connection-info"
         )
-        # The external string works from the build environment as well as the
-        # running service; the internal one is not reachable during build, and
-        # the schema step runs as part of the build command.
-        database_url = connection["externalConnectionString"]
-        detail("Retrieved connection string.")
+        # Internal, not external: a Render database created via the API has an
+        # empty IP allow list, so it refuses public connections outright. The
+        # internal host is reachable from both the build and the running
+        # service, and keeps the database off the internet entirely.
+        database_url = connection["internalConnectionString"]
+        detail("Retrieved internal connection string.")
 
         step("Provisioning web service")
         service = find_service(render, owner_id)
@@ -320,10 +330,12 @@ def main(argv: list[str]) -> int:
             f"/services/{service_id}/env-vars",
             json=build_env_vars(database_url, base_url=url),
         )
-        detail("Environment updated; this triggers a deploy.")
+        detail("Environment updated.")
 
-        step("Waiting for the deploy (first build takes a few minutes)")
-        status = wait_for_deploy(render, service_id)
+        step("Deploying (the first build takes a few minutes)")
+        deploy_id = trigger_deploy(render, service_id)
+        detail(f"Deploy {deploy_id} started.")
+        status = wait_for_deploy(render, service_id, deploy_id)
 
         dashboard = f"https://dashboard.render.com/web/{service_id}"
         if status != "live":
