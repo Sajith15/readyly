@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
+from time import perf_counter
 from typing import Any
 
 from openai import AsyncOpenAI, OpenAIError
@@ -97,11 +98,15 @@ async def run_chat_turn(
 
         for hop in range(MAX_TOOL_HOPS):
             try:
+                started = perf_counter()
                 response = await client.chat.completions.create(
                     model=AI_MODEL,
                     messages=messages,
                     tools=tool_defs,
                     tool_choice="auto",
+                )
+                logger.info(
+                    "model round trip %.2fs (hop %s)", perf_counter() - started, hop
                 )
             except OpenAIError as exc:
                 logger.exception("Model call failed on hop %s", hop)

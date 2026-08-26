@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from time import perf_counter
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -37,11 +38,17 @@ async def chat_api(payload: ChatRequest, user=Depends(require_user)):
     if not message:
         return JSONResponse({"error": "Say something first."}, status_code=400)
 
+    started = perf_counter()
     try:
         turn = await run_chat_turn(
             user_id=user_id,
             history=conversations.history(user_id),
             user_message=message,
+        )
+        logger.info(
+            "chat turn took %.2fs (tools: %s)",
+            perf_counter() - started,
+            turn.tools_used or "none",
         )
     except ChatUnavailable as exc:
         logger.warning("Chat unavailable for user %s: %s", user_id, exc)

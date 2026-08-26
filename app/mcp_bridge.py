@@ -16,6 +16,7 @@ import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 from mcp import ClientSession, StdioServerParameters, stdio_client
@@ -104,7 +105,11 @@ async def toolbox_for_user(user_id: str) -> AsyncIterator[MCPToolbox]:
             "STASH_USER_ID": str(user_id),
         },
     )
+    started = perf_counter()
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
+            # Spawning an interpreter dominates turn latency on small instances,
+            # so keep it measurable in production rather than guessing.
+            logger.info("MCP session ready in %.2fs", perf_counter() - started)
             yield MCPToolbox(session)
