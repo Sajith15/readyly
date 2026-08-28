@@ -326,3 +326,5 @@ Things I would fix first, in order of how much they matter:
    behaviour and clean up after themselves, but they are not wired into CI and
    there is no coverage measurement. Porting them to pytest and running them on
    push would be the obvious next step.
+
+# just to test auto-deploy
